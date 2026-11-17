@@ -7,6 +7,18 @@ import android.os.IBinder
 import android.provider.Telephony
 import android.telephony.*
 
+private class SignalCb : TelephonyCallback(), TelephonyCallback.SignalStrengthsListener {
+    override fun onSignalStrengthsChanged(s: SignalStrength) { Log.add("CELL", "signal level ${s.level}/4") }
+}
+
+private class CellCb : TelephonyCallback(), TelephonyCallback.CellInfoListener {
+    override fun onCellInfoChanged(c: MutableList<CellInfo>) { Log.add("CELL", "cell info changed (${c.size} cells)") }
+}
+
+private class ServiceCb : TelephonyCallback(), TelephonyCallback.ServiceStateListener {
+    override fun onServiceStateChanged(s: ServiceState) { Log.add("CELL", "service state ${s.state}") }
+}
+
 class SignalService : Service() {
     private val actions = listOf(
         Telephony.Sms.Intents.SMS_RECEIVED_ACTION,
@@ -30,17 +42,73 @@ class SignalService : Service() {
         "android.location.PROVIDERS_CHANGED"
     )
 
+    private var receiverRegistered = false
+    private val callbacks = ArrayList<TelephonyCallback>()
+    private var legacyListener: PhoneStateListener? = null
+
     private val rx = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            val name = (i.action ?: "?").substringAfterLast('.')
-            val ex = i.extras?.keySet()?.joinToString(", ") { k ->
-                val v = try { i.extras?.get(k) } catch (e: Exception) { "?" }
-                "$k=$v"
-            } ?: ""
             if (i.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
-                val m = Telephony.Sms.Intents.getMessagesFromIntent(i)
-                Log.add("SMS", "${m.firstOrNull()?.originatingAddress}: ${m.joinToString("") { it.messageBody ?: "" }}")
-            } else Log.add("SIG", "$name $ex".take(300))
+                val m: Array<SmsMessage>? = Telephony.Sms.Intents.getMessagesFromIntent(i)
+                Log.add("SMS", "${m?.firstOrNull()?.originatingAddress}: ${m?.joinToString("") { it.messageBody ?: "" } ?: ""}")
+                return
+            }
+            val name = (i.action ?: "?").substringAfterLast('.')
+            val b = i.extras
+            val ex = if (b == null) "" else b.keySet().joinToString(", ") { k ->
+                val v: Any? = try { b.get(k) } catch (e: Exception) { "?" }
+                "$k=${show(v)}"
+            }
+            Log.add("SIG", "$name $ex".take(300))
+        }
+    }
+
+    private fun show(v: Any?): String = when (v) {
+        is Array<*> -> v.contentToString()
+        is ByteArray -> v.contentToString()
+        is IntArray -> v.contentToString()
+        is LongArray -> v.contentToString()
+        else -> v.toString()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun listenTelephony() {
+        val tm = getSystemService(TelephonyManager::class.java) ?: return
+        stopTelephony()
+        if (Build.VERSION.SDK_INT >= 31) {
+            val candidates = listOf<TelephonyCallback>(SignalCb(), CellCb(), ServiceCb())
+            for (cb in candidates) {
+                try {
+                    tm.registerTelephonyCallback(mainExecutor, cb)
+                    callbacks.add(cb)
+                } catch (e: SecurityException) {
+                    Log.add("ERR", "${cb.javaClass.simpleName} needs a permission that is missing")
+                }
+            }
+        } else {
+            val l = object : PhoneStateListener() {
+                override fun onSignalStrengthsChanged(s: SignalStrength?) { Log.add("CELL", "signal level ${s?.level}/4") }
+                override fun onCellInfoChanged(c: MutableList<CellInfo>?) { Log.add("CELL", "cell info changed (${c?.size ?: 0} cells)") }
+                override fun onServiceStateChanged(s: ServiceState?) { Log.add("CELL", "service state ${s?.state}") }
+            }
+            try {
+                tm.listen(l, PhoneStateListener.LISTEN_SIGNAL_STRENGTHS or PhoneStateListener.LISTEN_CELL_INFO or PhoneStateListener.LISTEN_SERVICE_STATE)
+                legacyListener = l
+            } catch (e: SecurityException) {
+                Log.add("ERR", "phone permission missing")
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun stopTelephony() {
+        val tm = getSystemService(TelephonyManager::class.java) ?: return
+        if (Build.VERSION.SDK_INT >= 31) {
+            callbacks.forEach { tm.unregisterTelephonyCallback(it) }
+            callbacks.clear()
+        } else {
+            legacyListener?.let { tm.listen(it, PhoneStateListener.LISTEN_NONE) }
+            legacyListener = null
         }
     }
 
@@ -48,28 +116,27 @@ class SignalService : Service() {
         super.onCreate()
         val ch = "sc"
         val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(ch, "SignalCatcher", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(ch, "SignalCatcher", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, ch).setContentTitle("SignalCatcher listening")
             .setSmallIcon(android.R.drawable.stat_notify_sync).build()
         startForeground(1, n)
 
         val f = IntentFilter().also { fl -> actions.forEach { fl.addAction(it) } }
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(rx, f, Context.RECEIVER_EXPORTED) else registerReceiver(rx, f)
-
-        if (Build.VERSION.SDK_INT >= 31) try {
-            val tm = getSystemService(TelephonyManager::class.java)
-            tm.registerTelephonyCallback(mainExecutor, object : TelephonyCallback(),
-                TelephonyCallback.SignalStrengthsListener, TelephonyCallback.CellInfoListener,
-                TelephonyCallback.ServiceStateListener {
-                override fun onSignalStrengthsChanged(s: SignalStrength) { Log.add("CELL", "signal level ${s.level}/4") }
-                override fun onCellInfoChanged(c: MutableList<CellInfo>) { Log.add("CELL", "cell info changed (${c.size} cells)") }
-                override fun onServiceStateChanged(s: ServiceState) { Log.add("CELL", "service state ${s.state}") }
-            })
-        } catch (e: SecurityException) { Log.add("ERR", "phone permission missing") }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(rx, f, Context.RECEIVER_NOT_EXPORTED) else registerReceiver(rx, f)
+        receiverRegistered = true
         Log.add("SYS", "listening started")
     }
 
-    override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
+    override fun onStartCommand(i: Intent?, f: Int, s: Int): Int {
+        listenTelephony()
+        return START_STICKY
+    }
+
     override fun onBind(i: Intent?): IBinder? = null
-    override fun onDestroy() { unregisterReceiver(rx); super.onDestroy() }
+
+    override fun onDestroy() {
+        stopTelephony()
+        if (receiverRegistered) unregisterReceiver(rx)
+        super.onDestroy()
+    }
 }
