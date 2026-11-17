@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-permission android:name="android.permission.NFC"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application android:label="SignalCatcher">
         <activity android:name=".MainActivity" android:exported="true">
@@ -20,7 +21,8 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <service android:name=".SignalService" android:exported="false"/>
+        <service android:name=".SignalService" android:exported="false"
+            android:foregroundServiceType="location"/>
         <service android:name=".NotifService" android:exported="true"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
