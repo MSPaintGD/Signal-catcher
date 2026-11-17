@@ -1,0 +1,36 @@
+name: Build APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Arrange files
+        shell: bash
+        run: |
+          D=app/src/main/java/zenith/signalcatcher
+          mkdir -p $D
+          [ -f app-build.gradle ] && mv -f app-build.gradle app/build.gradle
+          [ -f AndroidManifest.xml ] && mv -f AndroidManifest.xml app/src/main/AndroidManifest.xml
+          for f in MainActivity.kt NotifService.kt SignalService.kt; do [ -f $f ] && mv -f $f $D/; done
+          find . -type f -not -path './.git/*' | sort
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.2 }
+      - name: Build
+        shell: bash
+        run: set -o pipefail; gradle assembleDebug --stacktrace 2>&1 | tee build.log
+      - name: Show error
+        if: failure()
+        shell: bash
+        run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          find . -type f -not -path './.git/*' -not -path './build/*' -not -path './app/build/*' -not -path './.gradle/*' | sort >> $GITHUB_STEP_SUMMARY
+          grep -A8 -m3 -E 'went wrong|^e: ' build.log >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SignalCatcher-apk
+          path: app/build/outputs/apk/debug/*.apk
